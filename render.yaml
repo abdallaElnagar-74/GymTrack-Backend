@@ -1,0 +1,17 @@
+# Render Blueprint: the Gym Tracker API, built from ./Dockerfile.
+# Database: Neon Postgres. Set DATABASE_URL in the Render dashboard (it is not stored here).
+services:
+  - type: web
+    name: gymtrack-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: false # CircleCI triggers deploys after tests pass
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: NODE_ENV
+        value: production

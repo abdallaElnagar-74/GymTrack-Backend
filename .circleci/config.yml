@@ -1,0 +1,71 @@
+version: 2.1
+
+# Backend CI: typecheck, run integration tests against a real Postgres, build the Docker image.
+jobs:
+  backend-test:
+    docker:
+      - image: cimg/node:22.12
+        environment:
+          DATABASE_URL: postgres://gym:gym@localhost:5432/gymapp
+          JWT_SECRET: ci-only-secret-not-used-anywhere-else-0123456789
+          PORT: 4000
+      - image: cimg/postgres:17.2
+        environment:
+          POSTGRES_USER: gym
+          POSTGRES_PASSWORD: gym
+          POSTGRES_DB: gymapp
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - backend-deps-{{ checksum "package-lock.json" }}
+      - run: npm ci
+      - save_cache:
+          key: backend-deps-{{ checksum "package-lock.json" }}
+          paths:
+            - ~/.npm
+      - run:
+          name: Wait for Postgres
+          command: dockerize -wait tcp://localhost:5432 -timeout 1m
+      - run:
+          name: Create .env for scripts that use --env-file
+          command: printf 'DATABASE_URL=%s\nJWT_SECRET=%s\nPORT=%s\n' "$DATABASE_URL" "$JWT_SECRET" "$PORT" > .env
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  backend-docker:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Build API image
+          command: docker build -t gymapp-backend:${CIRCLE_SHA1} .
+
+  backend-deploy:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - run:
+          name: Trigger Render deploy
+          command: |
+            if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+              echo "RENDER_DEPLOY_HOOK_URL is not set in CircleCI project settings"; exit 1
+            fi
+            curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
+
+workflows:
+  backend:
+    jobs:
+      - backend-test
+      - backend-docker:
+          requires:
+            - backend-test
+      - backend-deploy:
+          requires:
+            - backend-docker
+          filters:
+            branches:
+              only: main
