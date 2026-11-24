@@ -2,8 +2,9 @@ import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';
 import { createApp } from '../src/app.js';
-import { pool } from '../src/db.js';
+import { client, table, users } from '../src/db.js';
 import { migrate } from '../src/migrate.js';
+import { TABLE_NAMES } from '../src/tables.js';
 
 let server: Server;
 let base = '';
@@ -38,9 +39,12 @@ before(async () => {
 });
 
 after(async () => {
-  await pool.query("DELETE FROM users WHERE email LIKE 'test-%@example.com'");
+  const testUsers = { email: { $regex: /^test-.*@example\.com$/ } };
+  const ids = (await users.find(testUsers, { projection: { _id: 1 } }).toArray()).map((u) => u._id);
+  for (const t of TABLE_NAMES) await table(t).deleteMany({ user_id: { $in: ids } });
+  await users.deleteMany({ _id: { $in: ids } });
   server.close();
-  await pool.end();
+  await client.close();
 });
 
 describe('auth', () => {
@@ -62,6 +66,15 @@ describe('auth', () => {
     const me = await call('GET', '/auth/me', undefined, login.body.token);
     assert.equal(me.status, 200);
     assert.equal(me.body.user.email, e);
+  });
+
+  test('deleting the account removes its synced data', async () => {
+    const token = await newUser();
+    const me = await call('GET', '/auth/me', undefined, token);
+    await call('POST', '/sync/push', { changes: { exercises: [{ id: 'gone', updated_at: Date.now() }] } }, token);
+    assert.equal((await call('DELETE', '/auth/me', undefined, token)).status, 204);
+    assert.equal((await call('GET', '/auth/me', undefined, token)).status, 401);
+    assert.equal(await table('exercises').countDocuments({ user_id: me.body.user.id }), 0);
   });
 
   test('rejects short passwords and missing tokens', async () => {
@@ -179,6 +192,22 @@ describe('sync', () => {
     await call('POST', '/sync/push', { changes: { exercises: [{ id: 'secret', name: 'A only', updated_at: Date.now() }] } }, a);
     const pull = await call('GET', '/sync/pull?since=0', undefined, b);
     assert.equal(pull.body.changes.exercises.length, 0);
+  });
+
+  test('concurrent pushes from several devices all land with distinct versions', async () => {
+    const token = await newUser();
+    const t = Date.now();
+    const pushes = await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        call('POST', '/sync/push', { changes: { exercises: [{ id: `c${i}`, name: `E${i}`, updated_at: t }] } }, token)
+      )
+    );
+    assert.ok(pushes.every((p) => p.status === 200 && p.body.applied === 1));
+    const pull = await call('GET', '/sync/pull?since=0', undefined, token);
+    const versions = pull.body.changes.exercises.map((r: any) => r.version);
+    assert.equal(versions.length, 8);
+    assert.equal(new Set(versions).size, 8);
+    assert.equal(pull.body.version, Math.max(...versions));
   });
 
   test('validates input', async () => {

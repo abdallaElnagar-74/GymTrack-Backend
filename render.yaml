@@ -1,5 +1,6 @@
 # Render Blueprint: the Gym Tracker API, built from ./Dockerfile.
-# Database: Neon Postgres. Set DATABASE_URL in the Render dashboard (it is not stored here).
+# Database: MongoDB Atlas. Set MONGODB_URI in the Render dashboard (it is not stored here).
+# In Atlas -> Network Access, allow 0.0.0.0/0: Render free instances have no fixed outbound IP.
 services:
   - type: web
     name: gymtrack-api
@@ -9,9 +10,11 @@ services:
     healthCheckPath: /health
     autoDeploy: false # CircleCI triggers deploys after tests pass
     envVars:
-      - key: DATABASE_URL
+      - key: MONGODB_URI
         sync: false
       - key: JWT_SECRET
         generateValue: true
+      - key: MONGODB_DB
+        value: gymapp
       - key: NODE_ENV
         value: production

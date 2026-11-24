@@ -1,0 +1,16 @@
+// Cloudflare Workers config for the Gym Tracker API (deployed by `npx wrangler deploy`).
+// Secrets are NOT stored here: set MONGODB_URI, MONGODB_DB and JWT_SECRET in the dashboard
+// (Worker -> Settings -> Variables and Secrets) or with `npx wrangler secret put <NAME>`.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "gymtrack-backend",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "API", "class_name": "Api" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Api"] }],
+  "vars": { "NODE_ENV": "production" },
+  "observability": { "enabled": true }
+}

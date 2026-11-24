@@ -1,19 +1,18 @@
 version: 2.1
 
-# Backend CI: typecheck, run integration tests against a real Postgres, build the Docker image.
+# Backend CI: typecheck, run integration tests against a real MongoDB, build the Docker image.
 jobs:
   backend-test:
     docker:
       - image: cimg/node:22.12
         environment:
-          DATABASE_URL: postgres://gym:gym@localhost:5432/gymapp
+          MONGODB_URI: mongodb://localhost:27017/?replicaSet=rs0&directConnection=true
+          MONGODB_DB: gymapp_test
           JWT_SECRET: ci-only-secret-not-used-anywhere-else-0123456789
           PORT: 4000
-      - image: cimg/postgres:17.2
-        environment:
-          POSTGRES_USER: gym
-          POSTGRES_PASSWORD: gym
-          POSTGRES_DB: gymapp
+      # Single-node replica set: the API uses transactions.
+      - image: mongo:8
+        command: ["--replSet", "rs0", "--bind_ip_all"]
     steps:
       - checkout
       - restore_cache:
@@ -25,11 +24,21 @@ jobs:
           paths:
             - ~/.npm
       - run:
-          name: Wait for Postgres
-          command: dockerize -wait tcp://localhost:5432 -timeout 1m
+          name: Wait for MongoDB and initialise the replica set
+          command: |
+            dockerize -wait tcp://localhost:27017 -timeout 1m
+            node -e "
+              const { MongoClient } = require('mongodb');
+              (async () => {
+                const c = await MongoClient.connect('mongodb://localhost:27017/?directConnection=true');
+                await c.db('admin').command({ replSetInitiate: { _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] } });
+                for (let i = 0; i < 60 && !(await c.db('admin').command({ hello: 1 })).isWritablePrimary; i++) await new Promise((r) => setTimeout(r, 500));
+                await c.close();
+              })().catch((e) => { console.error(e); process.exit(1); });
+            "
       - run:
           name: Create .env for scripts that use --env-file
-          command: printf 'DATABASE_URL=%s\nJWT_SECRET=%s\nPORT=%s\n' "$DATABASE_URL" "$JWT_SECRET" "$PORT" > .env
+          command: printf 'MONGODB_URI=%s\nMONGODB_DB=%s\nJWT_SECRET=%s\nPORT=%s\n' "$MONGODB_URI" "$MONGODB_DB" "$JWT_SECRET" "$PORT" > .env
       - run: npm run typecheck
       - run: npm test
       - run: npm run build

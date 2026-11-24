@@ -1,19 +1,19 @@
 # Gym Tracker — Backend
 
-Node.js + TypeScript + Express + PostgreSQL. Provides accounts and offline-first sync for the mobile app.
+Node.js + TypeScript + Express + MongoDB (Atlas in production). Provides accounts and offline-first sync for the mobile app.
 
 ## Run it (development)
 
-Requires Node 22+ and Docker Desktop.
+Requires Node 22+. Either point `MONGODB_URI` at MongoDB Atlas, or run MongoDB locally with Docker Desktop.
 
 ```bash
 cd backend
 npm install
-npm run db:up        # starts PostgreSQL in Docker (port 5432)
-npm run dev          # starts the API on port 4000 (runs migrations automatically)
+npm run db:up        # optional: local MongoDB replica set in Docker (port 27017)
+npm run dev          # starts the API on port 4000 (creates indexes automatically)
 ```
 
-`.env` holds `DATABASE_URL`, `JWT_SECRET` and `PORT` (see `.env.example`). A random `JWT_SECRET` was generated for you — never commit `.env`.
+`.env` holds `MONGODB_URI`, `MONGODB_DB`, `JWT_SECRET` and `PORT` (see `.env.example`). A random `JWT_SECRET` was generated for you — never commit `.env`.
 
 On start the server prints addresses like `http://192.168.x.x:4000`.
 **On your phone use that address** (not `localhost`) in *Settings → Sign in to sync → Server address*.
@@ -24,11 +24,11 @@ The phone must be on the same Wi-Fi; allow Node.js through the Windows Firewall 
 | Command | What it does |
 | --- | --- |
 | `npm run dev` | API with auto-reload |
-| `npm test` | Integration tests (needs the DB running) |
+| `npm test` | Integration tests (needs MongoDB; use a separate `MONGODB_DB`, e.g. `gymapp_test`) |
 | `npm run typecheck` | Type-check |
 | `npm run build` / `npm start` | Compile to `dist/` and run the compiled server |
-| `npm run migrate` | Apply SQL migrations manually |
-| `npm run db:up` / `npm run db:down` | Start / stop PostgreSQL |
+| `npm run migrate` | Create the MongoDB indexes manually |
+| `npm run db:up` / `npm run db:down` | Start / stop local MongoDB |
 | `docker compose --profile full up -d --build` | Run DB **and** API in Docker |
 
 ## API
@@ -66,13 +66,19 @@ src/
   auth.ts      register / login / me, JWT middleware, rate limiting
   sync.ts      pull / push endpoints
   tables.ts    synced tables + zod validation
-  db.ts        pg pool + transactions
-  migrate.ts   SQL migration runner
-migrations/    *.sql applied in order
+  db.ts        MongoDB client, collections, transactions, indexes
+  migrate.ts   index setup (`npm run migrate`)
 test/          integration tests (node:test)
 ```
 
 ## Deploying
 
-Any host that runs Docker or Node 22 works (Railway, Render, Fly.io, a VPS) with a managed Postgres (Neon, Supabase, Railway).
-Set `DATABASE_URL` and a long random `JWT_SECRET`, and serve it over **HTTPS** — then put the `https://…` URL in the app.
+Any host that runs Docker or Node 22 works (Railway, Render, Fly.io, a VPS) with MongoDB Atlas.
+Set `MONGODB_URI` and a long random `JWT_SECRET`, and serve it over **HTTPS** — then put the `https://…` URL in the app.
+
+### Database notes
+
+- MongoDB must be a **replica set** (Atlas always is; `docker-compose.yml` runs a one-node one) because push/pull use transactions.
+- Collections: `users` plus one per synced table (`exercises`, `workouts`, …). Each synced document is a row with `user_id`, `id`, its columns, `updated_at`, `deleted` and `version`.
+- `version` is per user: every write takes the next value of `users.sync_version`. A push runs in a transaction that writes the user document first, so pushes from several devices of one user are applied one at a time; pulls read from a single snapshot.
+- In Atlas → **Network Access**, allow the IP of wherever the API runs (`0.0.0.0/0` for Render's free plan, which has no fixed IP).

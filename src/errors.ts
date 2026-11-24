@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError, z } from 'zod';
+import { log } from './log.js';
 
 export class HttpError extends Error {
   constructor(
@@ -27,6 +28,6 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     res.status(400).json({ error: 'Invalid JSON' });
     return;
   }
-  console.error(err);
+  log.error(err);
   res.status(500).json({ error: 'Server error' });
 }

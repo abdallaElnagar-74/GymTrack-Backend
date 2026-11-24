@@ -1,25 +1,36 @@
 import { networkInterfaces } from 'node:os';
 import { createApp } from './app.js';
-import { pool } from './db.js';
+import { client, connectDb } from './db.js';
 import { env } from './env.js';
+import { log } from './log.js';
 import { migrate } from './migrate.js';
 
-await migrate();
+try {
+  await connectDb();
+  await migrate();
+  log.info('MongoDB: indexes ready');
+} catch {
+  log.error('Could not start: database unavailable. Check MONGODB_URI and Atlas → Network Access.');
+  await client.close();
+  process.exit(1);
+}
 
-const server = createApp().listen(env.PORT, '0.0.0.0', () => {
-  console.log(`Gym API listening on http://localhost:${env.PORT}`);
+const server = createApp({ logRequests: true }).listen(env.PORT, '0.0.0.0', () => {
+  log.info(`Gym API listening on http://localhost:${env.PORT}`);
   // Print LAN addresses: the phone needs one of these (not "localhost").
   for (const list of Object.values(networkInterfaces())) {
     for (const a of list ?? []) {
-      if (a.family === 'IPv4' && !a.internal) console.log(`  on your network: http://${a.address}:${env.PORT}`);
+      if (a.family === 'IPv4' && !a.internal) log.info(`  on your network: http://${a.address}:${env.PORT}`);
     }
   }
 });
 
-async function shutdown() {
+async function shutdown(signal: string) {
+  log.info(`${signal} received, shutting down ...`);
   server.close();
-  await pool.end();
+  await client.close();
+  log.info('MongoDB: disconnected');
   process.exit(0);
 }
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
