@@ -152,7 +152,7 @@ describe('data api', () => {
     assert.equal((await a.get('/settings')).body.unit, 'kg');
     await a.put('/settings', { unit: 'lb' });
     assert.equal((await a.get('/settings')).body.unit, 'lb');
-    assert.equal((await a.get('/settings')).body.rest_seconds, 90);
+    assert.equal((await a.get('/settings')).body.rest_seconds, 60);
     await a.put('/settings', { rest_seconds: 120 });
     assert.deepEqual((await a.get('/settings')).body, { unit: 'lb', rest_seconds: 120 }); // unit kept
     assert.equal((await a.put('/settings', { rest_seconds: 9999 })).status, 400);

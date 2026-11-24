@@ -613,7 +613,7 @@ dataRouter.get('/settings', async (req, res) => {
   });
 });
 
-const DEFAULT_REST_SECONDS = 90;
+const DEFAULT_REST_SECONDS = 60;
 
 /** Change one or more settings; fields left out keep their value. */
 dataRouter.put('/settings', async (req, res) => {
