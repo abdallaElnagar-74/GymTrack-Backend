@@ -137,6 +137,68 @@ describe('data api', () => {
     assert.equal((await a.get('/workouts/summaries')).body.length, 1);
   });
 
+  test('plan days store every set (type, weight, reps) and starting uses them', async () => {
+    const a = api(await newUser());
+    const exs = (await a.get('/exercises')).body;
+    const bench = exs.find((e: any) => e.name === 'Bench Press');
+    const squat = exs.find((e: any) => e.name === 'Squat');
+    const plan = await a.post('/routines/from-template', { name: 'Planned', days: ['A'] });
+    const day = (await a.get(`/routines/${plan.body.id}`)).body.days[0];
+
+    // No history yet: the plan starts with empty working sets.
+    await a.post(`/days/${day.id}/exercises`, { exercise_id: bench.id, target_sets: 2 });
+    let de = (await a.get(`/routines/${plan.body.id}`)).body.days[0].exercises[0];
+    assert.deepEqual(de.sets, [
+      { kind: 'normal', reps: 0, weight_kg: 0 },
+      { kind: 'normal', reps: 0, weight_kg: 0 },
+    ]);
+
+    // Plan every set; reps 0 on the last one = fill in from last time.
+    const planned = [
+      { kind: 'warmup', reps: 12, weight_kg: 40 },
+      { kind: 'normal', reps: 10, weight_kg: 60 },
+      { kind: 'drop', reps: 0, weight_kg: 45 },
+    ];
+    assert.equal((await a.patch(`/day-exercises/${de.id}`, { sets: planned })).status, 204);
+    de = (await a.get(`/routines/${plan.body.id}`)).body.days[0].exercises[0];
+    assert.deepEqual(de.sets, planned);
+    assert.equal(de.target_sets, 3);
+    assert.equal((await a.patch(`/day-exercises/${de.id}`, { sets: [] })).status, 400);
+
+    // A previous session whose 3rd set had 7 reps.
+    const w0 = await a.post('/workouts', {});
+    for (const r of [5, 5, 7]) await a.post(`/workouts/${w0.body.id}/sets`, { exercise_id: bench.id, reps: r, weight_kg: 50 });
+    for (const g of (await a.get(`/workouts/${w0.body.id}/exercises`)).body) {
+      for (const x of g.sets) await a.patch(`/sets/${x.id}`, { done: true });
+    }
+    await a.post(`/workouts/${w0.body.id}/finish`);
+
+    // Starting the day uses the plan; the empty reps come from last time.
+    const w = await a.post('/workouts/from-day', { day_id: day.id });
+    const g = (await a.get(`/workouts/${w.body.id}/exercises`)).body[0];
+    assert.deepEqual(
+      g.sets.map((x: any) => [x.kind, x.weight_kg, x.reps]),
+      [
+        ['warmup', 40, 12],
+        ['normal', 60, 10],
+        ['drop', 45, 7],
+      ]
+    );
+    await a.del(`/workouts/${w.body.id}`);
+
+    // Adding an exercise that has history starts its plan from last time.
+    const w1 = await a.post('/workouts', {});
+    await a.post(`/workouts/${w1.body.id}/sets`, { exercise_id: squat.id, reps: 8, weight_kg: 100 });
+    const sq = (await a.get(`/workouts/${w1.body.id}/exercises`)).body[0].sets[0];
+    await a.patch(`/sets/${sq.id}`, { done: true });
+    await a.post(`/workouts/${w1.body.id}/finish`);
+    await a.post(`/days/${day.id}/exercises`, { exercise_id: squat.id });
+    const sqPlan = (await a.get(`/routines/${plan.body.id}`)).body.days[0].exercises.find(
+      (x: any) => x.exercise_id === squat.id
+    );
+    assert.deepEqual(sqPlan.sets, [{ kind: 'normal', reps: 8, weight_kg: 100 }]);
+  });
+
   test('sets renumber on delete; settings; videos', async () => {
     const a = api(await newUser());
     const ex = (await a.get('/exercises')).body[0];

@@ -75,6 +75,11 @@ const name = (max: number) => z.string().trim().min(1, 'Name is required').max(m
 const kind = z.enum(['normal', 'warmup', 'drop']);
 const reps = z.number().int().min(0).max(100000);
 const weight = z.number().min(0).max(100000);
+/** One set planned in a plan day: type, weight and reps (0 = fill in from last time when starting). */
+const plannedSet = z.object({ kind: kind.default('normal'), reps: reps.max(1000), weight_kg: weight });
+const plannedSets = z.array(plannedSet).min(1).max(20);
+type PlannedSet = z.infer<typeof plannedSet>;
+
 const exclude = (req: Request) => z.string().max(64).optional().parse(req.query.exclude) ?? '';
 
 // ---------- accounts ----------
@@ -441,6 +446,27 @@ dataRouter.post('/workouts/from-day', async (req, res) => {
   for (const link of links) {
     if (!existing.has(link.exercise_id)) continue;
     const last = context.get(link.exercise_id)?.last;
+    const planned = link.sets as PlannedSet[] | undefined;
+    if (planned?.length) {
+      const working = last?.sets.filter((s) => s.kind !== 'warmup') ?? [];
+      planned.forEach((ps, i) => {
+        // Empty planned values fall back to the same set last time, then to the last working set.
+        const prev = last?.sets[i] ?? working.at(-1) ?? last?.sets.at(-1);
+        sets.push(
+          doc(uid, {
+            workout_id: workoutId,
+            exercise_id: link.exercise_id,
+            set_number: i + 1,
+            reps: ps.reps || (prev?.reps ?? 0),
+            weight_kg: ps.weight_kg || (prev?.weight_kg ?? 0),
+            created_at: t++, // keeps the plan's exercise order
+            done: 0,
+            kind: ps.kind ?? 'normal',
+          })
+        );
+      });
+      continue;
+    }
     for (let i = 0; i < link.target_sets; i++) {
       // Same set types as last time (e.g. your 2 warm-ups), so you don't re-mark them every session.
       const same = last?.sets[i];
@@ -723,15 +749,34 @@ dataRouter.post('/days/:id/exercises', async (req, res) => {
   const uid = uidOf(req);
   const dayId = pid(req);
   const b = z
-    .object({ exercise_id: idSchema, target_sets: z.number().int().min(1).max(10).default(3) })
+    .object({
+      exercise_id: idSchema,
+      target_sets: z.number().int().min(1).max(20).default(3),
+      sets: plannedSets.optional(),
+    })
     .parse(req.body);
-  const [, , top] = await Promise.all([
+  const [, , top, context] = await Promise.all([
     must('routine_days', uid, dayId, 'Day'),
     must('exercises', uid, b.exercise_id, 'Exercise'),
     table('routine_day_exercises').findOne(live(uid, { day_id: dayId }), { sort: { position: -1 }, projection: { position: 1 } }),
+    b.sets ? null : exerciseContexts(uid, [b.exercise_id]),
   ]);
+  // The plan starts as what you did last time (same set types, weights and reps), else empty working sets.
+  const last = context?.get(b.exercise_id)?.last;
+  const sets: PlannedSet[] =
+    b.sets ??
+    (last?.sets.length
+      ? last.sets.slice(0, 20).map((x) => ({ kind: x.kind ?? 'normal', reps: x.reps, weight_kg: x.weight_kg }))
+      : Array.from({ length: b.target_sets }, () => ({ kind: 'normal' as const, reps: 0, weight_kg: 0 })));
   const position = top ? (top.position as number) + 1 : 0;
-  res.status(201).json({ id: await insert('routine_day_exercises', uid, { day_id: dayId, ...b, position }) });
+  const id = await insert('routine_day_exercises', uid, {
+    day_id: dayId,
+    exercise_id: b.exercise_id,
+    target_sets: sets.length,
+    sets,
+    position,
+  });
+  res.status(201).json({ id });
 });
 
 /** Reorder a day's exercises: `ids` in their new order. */
@@ -751,8 +796,12 @@ dataRouter.put('/days/:id/order', async (req, res) => {
 });
 
 dataRouter.patch('/day-exercises/:id', async (req, res) => {
-  const b = z.object({ target_sets: z.number().int().min(1).max(10) }).parse(req.body);
-  await update('routine_day_exercises', uidOf(req), pid(req), b, 'Exercise');
+  const b = z
+    .object({ target_sets: z.number().int().min(1).max(20).optional(), sets: plannedSets.optional() })
+    .refine((x) => x.target_sets !== undefined || x.sets !== undefined, 'Nothing to change')
+    .parse(req.body);
+  const data = b.sets ? { sets: b.sets, target_sets: b.sets.length } : { target_sets: b.target_sets };
+  await update('routine_day_exercises', uidOf(req), pid(req), data, 'Exercise');
   res.status(204).end();
 });
 
@@ -768,7 +817,7 @@ const BACKUP_FIELDS: Record<TableName, string[]> = {
   exercise_videos: ['exercise_id', 'source', 'url', 'title', 'position', 'created_at'],
   routines: ['name', 'created_at'],
   routine_days: ['routine_id', 'name', 'position'],
-  routine_day_exercises: ['day_id', 'exercise_id', 'position', 'target_sets'],
+  routine_day_exercises: ['day_id', 'exercise_id', 'position', 'target_sets', 'sets'],
   workouts: ['date', 'notes', 'finished_at', 'title', 'day_id'],
   workout_sets: ['workout_id', 'exercise_id', 'set_number', 'reps', 'weight_kg', 'created_at', 'done', 'kind'],
 };
@@ -805,7 +854,16 @@ const backupSchema = z.object({
   routines: z.array(z.object({ id: anyId, name: z.string().max(100), created_at: num.default(0) })).default([]),
   routine_days: z.array(z.object({ id: anyId, routine_id: ref, name: z.string().max(100), position: num.default(0) })).default([]),
   routine_day_exercises: z
-    .array(z.object({ id: anyId, day_id: ref, exercise_id: ref, position: num.default(0), target_sets: num.default(3) }))
+    .array(
+      z.object({
+        id: anyId,
+        day_id: ref,
+        exercise_id: ref,
+        position: num.default(0),
+        target_sets: num.default(3),
+        sets: plannedSets.optional(),
+      })
+    )
     .default([]),
   workouts: z.array(
     z.object({
