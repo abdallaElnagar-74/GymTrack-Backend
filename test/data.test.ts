@@ -186,6 +186,31 @@ describe('data api', () => {
     );
     await a.del(`/workouts/${w.body.id}`);
 
+    // A note on a planned set is kept in the plan and copied to the workout's set.
+    const withNote = [
+      { kind: 'normal', reps: 10, weight_kg: 60 },
+      { kind: 'drop', reps: 8, weight_kg: 45, note: '  drop 20%  ' },
+      { kind: 'normal', reps: 8, weight_kg: 60, note: '' },
+    ];
+    assert.equal((await a.patch(`/day-exercises/${de.id}`, { sets: withNote })).status, 204);
+    const deNote = (await a.get(`/routines/${plan.body.id}`)).body.days[0].exercises[0];
+    assert.deepEqual(deNote.sets, [
+      { kind: 'normal', reps: 10, weight_kg: 60 },
+      { kind: 'drop', reps: 8, weight_kg: 45, note: 'drop 20%' },
+      { kind: 'normal', reps: 8, weight_kg: 60 },
+    ]);
+    const wn = await a.post('/workouts/from-day', { day_id: day.id });
+    const gn = (await a.get(`/workouts/${wn.body.id}/exercises`)).body[0];
+    assert.deepEqual(
+      gn.sets.map((x: any) => x.note),
+      ['', 'drop 20%', '']
+    );
+    assert.equal((await a.patch(`/sets/${gn.sets[0].id}`, { note: 'slow' })).status, 204);
+    const gn2 = (await a.get(`/workouts/${wn.body.id}/exercises`)).body[0];
+    assert.equal(gn2.sets[0].note, 'slow');
+    assert.equal((await a.patch(`/sets/${gn.sets[0].id}`, { note: 'x'.repeat(121) })).status, 400);
+    await a.del(`/workouts/${wn.body.id}`);
+
     // Adding an exercise that has history starts its plan from last time.
     const w1 = await a.post('/workouts', {});
     await a.post(`/workouts/${w1.body.id}/sets`, { exercise_id: squat.id, reps: 8, weight_kg: 100 });

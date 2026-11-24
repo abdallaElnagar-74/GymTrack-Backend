@@ -75,10 +75,15 @@ const name = (max: number) => z.string().trim().min(1, 'Name is required').max(m
 const kind = z.enum(['normal', 'warmup', 'drop']);
 const reps = z.number().int().min(0).max(100000);
 const weight = z.number().min(0).max(100000);
-/** One set planned in a plan day: type, weight and reps (0 = fill in from last time when starting). */
-const plannedSet = z.object({ kind: kind.default('normal'), reps: reps.max(1000), weight_kg: weight });
+/** A short note on a set, e.g. "drop 20%" (empty = no note). */
+const setNote = z.string().trim().max(120);
+/** One set planned in a plan day: type, weight and reps (0 = fill in from last time when starting), optional note. */
+type PlannedSet = { kind: 'normal' | 'warmup' | 'drop'; reps: number; weight_kg: number; note?: string };
+const plannedSet = z
+  .object({ kind: kind.default('normal'), reps: reps.max(1000), weight_kg: weight, note: setNote.optional() })
+  // An empty note is dropped instead of being stored.
+  .transform(({ note, ...rest }): PlannedSet => (note ? { ...rest, note } : rest));
 const plannedSets = z.array(plannedSet).min(1).max(20);
-type PlannedSet = z.infer<typeof plannedSet>;
 
 const exclude = (req: Request) => z.string().max(64).optional().parse(req.query.exclude) ?? '';
 
@@ -462,6 +467,7 @@ dataRouter.post('/workouts/from-day', async (req, res) => {
             created_at: t++, // keeps the plan's exercise order
             done: 0,
             kind: ps.kind ?? 'normal',
+            note: ps.note ?? '',
           })
         );
       });
@@ -481,6 +487,7 @@ dataRouter.post('/workouts/from-day', async (req, res) => {
           created_at: t++, // keeps the plan's exercise order
           done: 0,
           kind: same?.kind ?? 'normal',
+          note: '',
         })
       );
     }
@@ -573,7 +580,7 @@ dataRouter.post('/workouts/:id/sets', async (req, res) => {
   const uid = uidOf(req);
   const workoutId = pid(req);
   const b = z
-    .object({ exercise_id: idSchema, reps, weight_kg: weight, kind: kind.default('normal') })
+    .object({ exercise_id: idSchema, reps, weight_kg: weight, kind: kind.default('normal'), note: setNote.default('') })
     .parse(req.body);
   const [, , top] = await Promise.all([
     must('workouts', uid, workoutId, 'Workout'),
@@ -592,6 +599,7 @@ dataRouter.post('/workouts/:id/sets', async (req, res) => {
     created_at: Date.now(),
     done: 0,
     kind: b.kind,
+    note: b.note,
   });
   res.status(201).json({ id });
 });
@@ -605,7 +613,13 @@ dataRouter.delete('/workouts/:id/exercises/:exerciseId', async (req, res) => {
 
 dataRouter.patch('/sets/:id', async (req, res) => {
   const b = z
-    .object({ reps: reps.optional(), weight_kg: weight.optional(), kind: kind.optional(), done: z.boolean().optional() })
+    .object({
+      reps: reps.optional(),
+      weight_kg: weight.optional(),
+      kind: kind.optional(),
+      note: setNote.optional(),
+      done: z.boolean().optional(),
+    })
     .parse(req.body);
   const { done, ...rest } = b;
   await update('workout_sets', uidOf(req), pid(req), { ...rest, ...(done === undefined ? {} : { done: done ? 1 : 0 }) }, 'Set');
@@ -886,6 +900,7 @@ const backupSchema = z.object({
       created_at: num.default(0),
       done: num.nullish().transform((v) => (v === 0 ? 0 : 1)),
       kind: z.string().nullish().transform((k) => (k === 'warmup' || k === 'drop' ? k : 'normal')),
+      note: z.string().max(120).nullish().transform((s) => s ?? ''),
     })
   ),
 });
