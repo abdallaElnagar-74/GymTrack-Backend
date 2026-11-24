@@ -211,6 +211,31 @@ describe('data api', () => {
     assert.equal((await a.patch(`/sets/${gn.sets[0].id}`, { note: 'x'.repeat(121) })).status, 400);
     await a.del(`/workouts/${wn.body.id}`);
 
+    // A YouTube link on a planned set (e.g. how to do the drop set) is kept and copied to the workout's set.
+    const yt = 'https://youtu.be/dQw4w9WgXcQ';
+    const withLink = [
+      { kind: 'normal', reps: 0, weight_kg: 0 },
+      { kind: 'drop', reps: 0, weight_kg: 0, link: `  ${yt}  ` },
+      { kind: 'normal', reps: 0, weight_kg: 0, link: '' },
+    ];
+    assert.equal((await a.patch(`/day-exercises/${de.id}`, { sets: withLink })).status, 204);
+    const deLink = (await a.get(`/routines/${plan.body.id}`)).body.days[0].exercises[0];
+    assert.deepEqual(deLink.sets, [
+      { kind: 'normal', reps: 0, weight_kg: 0 },
+      { kind: 'drop', reps: 0, weight_kg: 0, link: yt },
+      { kind: 'normal', reps: 0, weight_kg: 0 },
+    ]);
+    const wl = await a.post('/workouts/from-day', { day_id: day.id });
+    const gl = (await a.get(`/workouts/${wl.body.id}/exercises`)).body[0];
+    assert.deepEqual(
+      gl.sets.map((x: any) => x.link),
+      ['', yt, '']
+    );
+    await a.del(`/workouts/${wl.body.id}`);
+    // Only YouTube links are accepted.
+    const badLink = [{ kind: 'drop', reps: 0, weight_kg: 0, link: 'https://evil.example.com/x' }];
+    assert.equal((await a.patch(`/day-exercises/${de.id}`, { sets: badLink })).status, 400);
+
     // Adding an exercise that has history starts its plan from last time.
     const w1 = await a.post('/workouts', {});
     await a.post(`/workouts/${w1.body.id}/sets`, { exercise_id: squat.id, reps: 8, weight_kg: 100 });

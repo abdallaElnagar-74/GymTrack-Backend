@@ -77,12 +77,25 @@ const reps = z.number().int().min(0).max(100000);
 const weight = z.number().min(0).max(100000);
 /** A short note on a set, e.g. "drop 20%" (empty = no note). */
 const setNote = z.string().trim().max(120);
-/** One set planned in a plan day: type, weight and reps (0 = fill in from last time when starting), optional note. */
-type PlannedSet = { kind: 'normal' | 'warmup' | 'drop'; reps: number; weight_kg: number; note?: string };
+/** A YouTube link showing how to do a set (e.g. a drop set); empty = none. Opened in YouTube by the app. */
+const YOUTUBE = /^(https?:\/\/)?((www|m|music)\.)?(youtube\.com|youtu\.be)\/\S+$/i;
+const setLink = z
+  .string()
+  .trim()
+  .max(300)
+  .refine((s) => s === '' || YOUTUBE.test(s), 'Enter a YouTube link');
+/** One set planned in a plan day: type, weight and reps (0 = fill in from last time when starting), optional note and link. */
+type PlannedSet = { kind: 'normal' | 'warmup' | 'drop'; reps: number; weight_kg: number; note?: string; link?: string };
 const plannedSet = z
-  .object({ kind: kind.default('normal'), reps: reps.max(1000), weight_kg: weight, note: setNote.optional() })
-  // An empty note is dropped instead of being stored.
-  .transform(({ note, ...rest }): PlannedSet => (note ? { ...rest, note } : rest));
+  .object({
+    kind: kind.default('normal'),
+    reps: reps.max(1000),
+    weight_kg: weight,
+    note: setNote.optional(),
+    link: setLink.optional(),
+  })
+  // An empty note or link is dropped instead of being stored.
+  .transform(({ note, link, ...rest }): PlannedSet => ({ ...rest, ...(note ? { note } : {}), ...(link ? { link } : {}) }));
 const plannedSets = z.array(plannedSet).min(1).max(20);
 
 const exclude = (req: Request) => z.string().max(64).optional().parse(req.query.exclude) ?? '';
@@ -468,6 +481,7 @@ dataRouter.post('/workouts/from-day', async (req, res) => {
             done: 0,
             kind: ps.kind ?? 'normal',
             note: ps.note ?? '',
+            link: ps.link ?? '',
           })
         );
       });
@@ -488,6 +502,7 @@ dataRouter.post('/workouts/from-day', async (req, res) => {
           done: 0,
           kind: same?.kind ?? 'normal',
           note: '',
+          link: '',
         })
       );
     }
@@ -580,7 +595,14 @@ dataRouter.post('/workouts/:id/sets', async (req, res) => {
   const uid = uidOf(req);
   const workoutId = pid(req);
   const b = z
-    .object({ exercise_id: idSchema, reps, weight_kg: weight, kind: kind.default('normal'), note: setNote.default('') })
+    .object({
+      exercise_id: idSchema,
+      reps,
+      weight_kg: weight,
+      kind: kind.default('normal'),
+      note: setNote.default(''),
+      link: setLink.default(''),
+    })
     .parse(req.body);
   const [, , top] = await Promise.all([
     must('workouts', uid, workoutId, 'Workout'),
@@ -600,6 +622,7 @@ dataRouter.post('/workouts/:id/sets', async (req, res) => {
     done: 0,
     kind: b.kind,
     note: b.note,
+    link: b.link,
   });
   res.status(201).json({ id });
 });
@@ -618,6 +641,7 @@ dataRouter.patch('/sets/:id', async (req, res) => {
       weight_kg: weight.optional(),
       kind: kind.optional(),
       note: setNote.optional(),
+      link: setLink.optional(),
       done: z.boolean().optional(),
     })
     .parse(req.body);
@@ -833,7 +857,7 @@ const BACKUP_FIELDS: Record<TableName, string[]> = {
   routine_days: ['routine_id', 'name', 'position'],
   routine_day_exercises: ['day_id', 'exercise_id', 'position', 'target_sets', 'sets'],
   workouts: ['date', 'notes', 'finished_at', 'title', 'day_id'],
-  workout_sets: ['workout_id', 'exercise_id', 'set_number', 'reps', 'weight_kg', 'created_at', 'done', 'kind'],
+  workout_sets: ['workout_id', 'exercise_id', 'set_number', 'reps', 'weight_kg', 'created_at', 'done', 'kind', 'note', 'link'],
 };
 
 dataRouter.get('/backup', async (req, res) => {
@@ -901,6 +925,7 @@ const backupSchema = z.object({
       done: num.nullish().transform((v) => (v === 0 ? 0 : 1)),
       kind: z.string().nullish().transform((k) => (k === 'warmup' || k === 'drop' ? k : 'normal')),
       note: z.string().max(120).nullish().transform((s) => s ?? ''),
+      link: z.string().max(300).nullish().transform((s) => s ?? ''),
     })
   ),
 });
