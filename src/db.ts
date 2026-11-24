@@ -6,7 +6,22 @@ import { TABLE_NAMES, type TableName } from './tables.js';
 /** Running on Cloudflare Workers (see worker.ts) rather than Node. */
 const onWorkers = globalThis.navigator?.userAgent === 'Cloudflare-Workers';
 
-export const client = new MongoClient(
+/**
+ * An object created on first use instead of when the code loads (the database client needs
+ * MONGODB_URI, which on Cloudflare may not be readable at load time; see env.ts).
+ */
+function lazy<T extends object>(make: () => T): T {
+  let value: T | null = null;
+  return new Proxy({} as T, {
+    get(_target, key) {
+      value ??= make();
+      const v = Reflect.get(value, key, value);
+      return typeof v === 'function' ? v.bind(value) : v;
+    },
+  });
+}
+
+export const client = lazy(() => new MongoClient(
   env.MONGODB_URI,
   onWorkers
     ? {
@@ -26,8 +41,8 @@ export const client = new MongoClient(
         // IPv6-only / NAT64 networks (some ISPs, phone hotspots); the IPv4 fallback then hangs.
         autoSelectFamilyAttemptTimeout: 2000,
       }
-);
-export const db = client.db(env.MONGODB_DB);
+));
+export const db = lazy(() => client.db(env.MONGODB_DB));
 
 /** Cluster host for log messages (never includes the username/password). */
 function clusterHost() {
@@ -79,7 +94,7 @@ export type SyncedDoc = Document & {
   version: number;
 };
 
-export const users = db.collection<UserDoc>('users');
+export const users = lazy(() => db.collection<UserDoc>('users'));
 export const table = (t: TableName) => db.collection<SyncedDoc>(t);
 
 /**

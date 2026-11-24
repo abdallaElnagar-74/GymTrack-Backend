@@ -8,11 +8,26 @@ const schema = z.object({
   NODE_ENV: z.string().default('development'),
 });
 
-const parsed = schema.safeParse(process.env);
-if (!parsed.success) {
-  console.error('Invalid environment:', z.prettifyError(parsed.error));
-  console.error('Copy .env.example to .env and fill it in (on Cloudflare: Settings -> Variables and Secrets).');
-  throw new Error('Invalid environment');
+export type Env = z.infer<typeof schema>;
+
+let cached: Env | null = null;
+
+/**
+ * Settings from the environment, checked on first use (not when the code loads): Cloudflare
+ * starts the Worker once while deploying, and a deploy must not fail just because secrets
+ * aren't readable at that moment. A missing or invalid value throws on the first request.
+ */
+function load(): Env {
+  if (cached) return cached;
+  const parsed = schema.safeParse(process.env);
+  if (!parsed.success) {
+    console.error('Invalid environment:', z.prettifyError(parsed.error));
+    console.error('Copy .env.example to .env and fill it in (on Cloudflare: Settings -> Variables and Secrets).');
+    throw new Error('Invalid environment: ' + z.prettifyError(parsed.error).replace(/\s+/g, ' '));
+  }
+  return (cached = parsed.data);
 }
 
-export const env = parsed.data;
+export const env: Env = new Proxy({} as Env, {
+  get: (_target, key) => load()[key as keyof Env],
+});
