@@ -288,7 +288,10 @@ describe('data api', () => {
     assert.equal((await a.get('/settings')).body.unit, 'lb');
     assert.equal((await a.get('/settings')).body.rest_seconds, 60);
     await a.put('/settings', { rest_seconds: 120 });
-    assert.deepEqual((await a.get('/settings')).body, { unit: 'lb', rest_seconds: 120, technique_links: {} }); // unit kept
+    const st = (await a.get('/settings')).body;
+    assert.equal(st.unit, 'lb'); // kept
+    assert.equal(st.rest_seconds, 120);
+    assert.deepEqual(st.technique_links, { warmup: '', drop: '' });
     assert.equal((await a.put('/settings', { rest_seconds: 9999 })).status, 400);
 
     // General technique videos: one type at a time, others kept; only YouTube links.
@@ -302,6 +305,42 @@ describe('data api', () => {
     await a.put('/settings', { technique_links: { warmup: '' } });
     assert.equal((await a.get('/settings')).body.technique_links.warmup, '');
     assert.equal((await a.get('/settings')).body.unit, 'lb');
+
+    // Technique list: built-ins (from the old per-type links) + the user's own.
+    assert.deepEqual((await a.get('/settings')).body.techniques, [
+      { id: 'warmup', name: '', link: '' },
+      { id: 'drop', name: '', link: 'https://youtu.be/drop1' },
+    ]);
+    const put = (techniques: unknown) => a.put('/settings/techniques', { techniques });
+    assert.equal(
+      (await put([
+        { id: 'drop', name: 'ignored', link: 'https://youtu.be/d2' },
+        { id: 'rp1', name: 'Rest-pause', link: 'youtu.be/rp' },
+        { id: 'ss1', name: 'Superset' },
+      ])).status,
+      204
+    );
+    const s = (await a.get('/settings')).body;
+    assert.deepEqual(s.techniques, [
+      { id: 'warmup', name: '', link: '' }, // built-ins can't be removed
+      { id: 'drop', name: '', link: 'https://youtu.be/d2' },
+      { id: 'rp1', name: 'Rest-pause', link: 'youtu.be/rp' },
+      { id: 'ss1', name: 'Superset', link: '' },
+    ]);
+    assert.equal(s.technique_links.drop, 'https://youtu.be/d2');
+    assert.equal((await put([{ id: 'x', name: '' }])).status, 400); // needs a name
+    assert.equal((await put([{ id: 'x', name: 'X', link: 'https://vimeo.com/1' }])).status, 400);
+    assert.equal((await put([{ id: 'x', name: 'X' }, { id: 'x', name: 'Y' }])).status, 400);
+
+    // An exercise ticks the techniques it uses; plans carry them.
+    const bench = (await a.get('/exercises')).body.find((e: any) => e.name === 'Bench Press');
+    assert.equal((await a.put(`/exercises/${bench.id}/techniques`, { ids: ['drop', 'rp1', 'rp1'] })).status, 204);
+    assert.deepEqual((await a.get(`/exercises/${bench.id}`)).body.technique_ids, ['drop', 'rp1']);
+    const plan = await a.post('/routines', { name: 'T' });
+    const day = await a.post(`/routines/${plan.body.id}/days`, { name: 'D' });
+    await a.post(`/days/${day.body.id}/exercises`, { exercise_id: bench.id });
+    const full = (await a.get(`/routines/${plan.body.id}`)).body;
+    assert.deepEqual(full.days[0].exercises[0].technique_ids, ['drop', 'rp1']);
 
     const v = await a.post(`/exercises/${ex.id}/videos`, { source: 'youtube', url: 'https://youtu.be/x', title: 'Form' });
     assert.equal(v.status, 201);

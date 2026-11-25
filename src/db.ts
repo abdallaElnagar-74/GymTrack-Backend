@@ -82,7 +82,12 @@ export type UserDoc = {
   sync_version: number;
   /** Rewritten at the start of every push, purely to lock the user's row for that transaction. */
   sync_lock?: ObjectId;
-  settings?: { unit?: 'kg' | 'lb'; rest_seconds?: number; technique_links?: Partial<Record<'normal' | 'warmup' | 'drop', string>> };
+  settings?: {
+    unit?: 'kg' | 'lb';
+    rest_seconds?: number;
+    technique_links?: Partial<Record<'normal' | 'warmup' | 'drop', string>>;
+    techniques?: { id: string; name: string; link: string }[];
+  };
 };
 
 /** A synced row: the client's fields plus the owner and the server sync version. */

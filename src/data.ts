@@ -237,7 +237,7 @@ async function routinesFull(uid: string, routineId?: string) {
     list('routines', uid, routineId ? { id: routineId } : {}, { sort: { created_at: 1, _id: 1 } }),
     list('routine_days', uid, routineId ? { routine_id: routineId } : {}, sortPos),
     list('routine_day_exercises', uid, {}, sortPos),
-    table('exercises').find(live(uid), { projection: { _id: 0, id: 1, name: 1, muscle_group: 1 } }).toArray(),
+    table('exercises').find(live(uid), { projection: { _id: 0, id: 1, name: 1, muscle_group: 1, technique_ids: 1 } }).toArray(),
     // Most recent finished workout per plan day.
     table('workouts')
       .aggregate<{ _id: string; date: number }>([
@@ -256,7 +256,10 @@ async function routinesFull(uid: string, routineId?: string) {
         ...d,
         exercises: links
           .filter((l) => l.day_id === d.id && exs.has(l.exercise_id))
-          .map((l) => ({ ...l, name: exs.get(l.exercise_id)!.name, muscle_group: exs.get(l.exercise_id)!.muscle_group })),
+          .map((l) => {
+            const ex = exs.get(l.exercise_id)!;
+            return { ...l, name: ex.name, muscle_group: ex.muscle_group, technique_ids: ex.technique_ids ?? [] };
+          }),
       }));
 
     // Next day in rotation = the day after the most recently finished one.
@@ -323,6 +326,13 @@ dataRouter.patch('/exercises/:id', async (req, res) => {
 dataRouter.put('/exercises/:id/technique-links', async (req, res) => {
   const b = z.object({ kind, link: setLink }).parse(req.body);
   await update('exercises', uidOf(req), pid(req), { [`technique_links.${b.kind}`]: b.link }, 'Exercise');
+  res.status(204).end();
+});
+
+/** Which of the account's techniques (ids from /settings) this exercise uses; shown as a note on it. */
+dataRouter.put('/exercises/:id/techniques', async (req, res) => {
+  const { ids } = z.object({ ids: z.array(idSchema).max(30) }).parse(req.body);
+  await update('exercises', uidOf(req), pid(req), { technique_ids: [...new Set(ids)] }, 'Exercise');
   res.status(204).end();
 });
 
@@ -680,14 +690,58 @@ dataRouter.delete('/sets/:id', async (req, res) => {
 
 // Settings
 
+/**
+ * Training techniques of an account (Exercises tab), each with an optional YouTube video.
+ * "warmup" and "drop" always exist (they match the warm-up / drop set types); the user adds more
+ * (rest-pause, superset…) and ticks on each exercise which ones it uses.
+ */
+type Technique = { id: string; name: string; link: string };
+const BUILTIN_TECHNIQUES = ['warmup', 'drop'] as const;
+
+function techniquesOf(settings: Row | undefined): Technique[] {
+  const saved: Technique[] = Array.isArray(settings?.techniques) ? settings.techniques : [];
+  const legacy: Row = settings?.technique_links ?? {}; // v1.2.5: one link per set type
+  const builtins = BUILTIN_TECHNIQUES.map(
+    (id) => saved.find((t) => t.id === id) ?? { id, name: '', link: legacy[id] ?? '' }
+  );
+  return [...builtins, ...saved.filter((t) => !(BUILTIN_TECHNIQUES as readonly string[]).includes(t.id))];
+}
+
 dataRouter.get('/settings', async (req, res) => {
   const u = await users.findOne({ _id: uidOf(req) }, { projection: { settings: 1 } });
+  const techniques = techniquesOf(u?.settings);
   res.json({
     unit: u?.settings?.unit === 'lb' ? 'lb' : 'kg',
     rest_seconds: u?.settings?.rest_seconds ?? DEFAULT_REST_SECONDS,
-    // General technique videos (YouTube per set type, e.g. how to do a drop set), for every exercise.
-    technique_links: u?.settings?.technique_links ?? {},
+    techniques,
+    // Older apps (v1.2.5) read the built-in techniques' videos from here.
+    technique_links: Object.fromEntries(techniques.filter((t) => t.id === 'warmup' || t.id === 'drop').map((t) => [t.id, t.link])),
   });
+});
+
+const techniquesBody = z
+  .array(z.object({ id: idSchema, name: z.string().trim().max(60), link: setLink.default('') }))
+  .max(30)
+  .refine((a) => new Set(a.map((t) => t.id)).size === a.length, 'Duplicate technique')
+  .refine(
+    (a) => a.every((t) => (BUILTIN_TECHNIQUES as readonly string[]).includes(t.id) || t.name !== ''),
+    'Give the technique a name'
+  );
+
+/** Replace the account's technique list (built-ins are always kept; their names are fixed). */
+dataRouter.put('/settings/techniques', async (req, res) => {
+  const list = techniquesBody.parse(req.body?.techniques);
+  const techniques = techniquesOf({ techniques: list.map((t) => (BUILTIN_TECHNIQUES as readonly string[]).includes(t.id) ? { ...t, name: '' } : t) });
+  await users.updateOne(
+    { _id: uidOf(req) },
+    {
+      $set: {
+        'settings.techniques': techniques,
+        'settings.technique_links': Object.fromEntries(techniques.filter((t) => !t.name).map((t) => [t.id, t.link])),
+      },
+    }
+  );
+  res.status(204).end();
 });
 
 const DEFAULT_REST_SECONDS = 60;
@@ -868,7 +922,7 @@ dataRouter.delete('/day-exercises/:id', async (req, res) => {
 // Backup file (export / restore)
 
 const BACKUP_FIELDS: Record<TableName, string[]> = {
-  exercises: ['name', 'muscle_group', 'created_at', 'technique_links'],
+  exercises: ['name', 'muscle_group', 'created_at', 'technique_links', 'technique_ids'],
   exercise_videos: ['exercise_id', 'source', 'url', 'title', 'position', 'created_at'],
   routines: ['name', 'created_at'],
   routine_days: ['routine_id', 'name', 'position'],
@@ -896,6 +950,7 @@ const backupSchema = z.object({
       name: z.string().trim().min(1).max(100),
       muscle_group: z.string().max(40).default('Other'),
       created_at: num.default(0),
+      technique_ids: z.array(z.string().max(64)).max(30).nullish().transform((v) => v ?? []),
       // Invalid links in an old/edited file are dropped rather than failing the whole import.
       technique_links: z
         .record(z.string(), z.unknown())
