@@ -70,6 +70,28 @@ describe('data api', () => {
     assert.equal((await a.get(`/exercises/${add.body.id}`)).body.name, 'Cable Row');
   });
 
+  test('technique links per set type: saved on the exercise, validated, kept by backup', async () => {
+    const a = api(await newUser());
+    const bench = (await a.get('/exercises')).body.find((e: any) => e.name === 'Bench Press');
+    const path = `/exercises/${bench.id}/technique-links`;
+    assert.equal((await a.put(path, { kind: 'drop', link: 'https://youtu.be/abc123' })).status, 204);
+    assert.equal((await a.put(path, { kind: 'warmup', link: 'https://example.com/x' })).status, 400);
+    assert.equal((await a.put(path, { kind: 'heavy', link: 'https://youtu.be/abc123' })).status, 400);
+    let ex = (await a.get(`/exercises/${bench.id}`)).body;
+    assert.deepEqual(ex.technique_links, { drop: 'https://youtu.be/abc123' });
+
+    // Name edits keep the links.
+    assert.equal((await a.patch(`/exercises/${bench.id}`, { name: 'Bench Press', muscle_group: 'Chest' })).status, 204);
+    const backup = (await a.get('/backup')).body;
+    assert.equal((await a.post('/backup', backup)).status, 200);
+    ex = (await a.get('/exercises')).body.find((e: any) => e.name === 'Bench Press');
+    assert.deepEqual(ex.technique_links, { drop: 'https://youtu.be/abc123' });
+
+    // Empty link clears it.
+    assert.equal((await a.put(`/exercises/${ex.id}/technique-links`, { kind: 'drop', link: '' })).status, 204);
+    assert.equal((await a.get(`/exercises/${ex.id}`)).body.technique_links.drop, '');
+  });
+
   test('plan -> start day -> log -> finish -> history, records, stats', async () => {
     const a = api(await newUser());
     const bench = (await a.get('/exercises')).body.find((e: any) => e.name === 'Bench Press');

@@ -315,6 +315,17 @@ dataRouter.patch('/exercises/:id', async (req, res) => {
   res.status(204).end();
 });
 
+/**
+ * Technique videos of an exercise: one YouTube link per set type (e.g. how to do its drop set).
+ * Every set of that type, in any plan, shows it while training unless the set has its own link.
+ * An empty link removes it.
+ */
+dataRouter.put('/exercises/:id/technique-links', async (req, res) => {
+  const b = z.object({ kind, link: setLink }).parse(req.body);
+  await update('exercises', uidOf(req), pid(req), { [`technique_links.${b.kind}`]: b.link }, 'Exercise');
+  res.status(204).end();
+});
+
 dataRouter.delete('/exercises/:id', async (req, res) => {
   const uid = uidOf(req);
   const id = pid(req);
@@ -851,7 +862,7 @@ dataRouter.delete('/day-exercises/:id', async (req, res) => {
 // Backup file (export / restore)
 
 const BACKUP_FIELDS: Record<TableName, string[]> = {
-  exercises: ['name', 'muscle_group', 'created_at'],
+  exercises: ['name', 'muscle_group', 'created_at', 'technique_links'],
   exercise_videos: ['exercise_id', 'source', 'url', 'title', 'position', 'created_at'],
   routines: ['name', 'created_at'],
   routine_days: ['routine_id', 'name', 'position'],
@@ -874,7 +885,23 @@ const num = z.number().finite();
 const backupSchema = z.object({
   app: z.literal('gymapp', { message: 'This file is not a GymApp backup.' }),
   exercises: z.array(
-    z.object({ id: anyId, name: z.string().trim().min(1).max(100), muscle_group: z.string().max(40).default('Other'), created_at: num.default(0) })
+    z.object({
+      id: anyId,
+      name: z.string().trim().min(1).max(100),
+      muscle_group: z.string().max(40).default('Other'),
+      created_at: num.default(0),
+      // Invalid links in an old/edited file are dropped rather than failing the whole import.
+      technique_links: z
+        .record(z.string(), z.unknown())
+        .nullish()
+        .transform((m) =>
+          Object.fromEntries(
+            Object.entries(m ?? {}).filter(
+              ([k, v]) => ['normal', 'warmup', 'drop'].includes(k) && setLink.safeParse(v).success && v !== ''
+            )
+          )
+        ),
+    })
   ),
   exercise_videos: z
     .array(
