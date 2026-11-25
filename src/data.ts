@@ -685,6 +685,8 @@ dataRouter.get('/settings', async (req, res) => {
   res.json({
     unit: u?.settings?.unit === 'lb' ? 'lb' : 'kg',
     rest_seconds: u?.settings?.rest_seconds ?? DEFAULT_REST_SECONDS,
+    // General technique videos (YouTube per set type, e.g. how to do a drop set), for every exercise.
+    technique_links: u?.settings?.technique_links ?? {},
   });
 });
 
@@ -697,9 +699,13 @@ dataRouter.put('/settings', async (req, res) => {
       unit: z.enum(['kg', 'lb']).optional(),
       // Rest timer after a ticked set; 0 = off.
       rest_seconds: z.number().int().min(0).max(600).optional(),
+      // Only the set types given change; '' removes that video.
+      technique_links: z.object({ normal: setLink, warmup: setLink, drop: setLink }).partial().optional(),
     })
     .parse(req.body);
-  const set = Object.fromEntries(Object.entries(b).filter(([, v]) => v !== undefined).map(([k, v]) => [`settings.${k}`, v]));
+  const { technique_links, ...rest } = b;
+  const set: Record<string, unknown> = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined).map(([k, v]) => [`settings.${k}`, v]));
+  for (const [k, v] of Object.entries(technique_links ?? {})) set[`settings.technique_links.${k}`] = v;
   if (Object.keys(set).length) await users.updateOne({ _id: uidOf(req) }, { $set: set });
   res.status(204).end();
 });

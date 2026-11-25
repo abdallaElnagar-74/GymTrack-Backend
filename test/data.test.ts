@@ -288,8 +288,20 @@ describe('data api', () => {
     assert.equal((await a.get('/settings')).body.unit, 'lb');
     assert.equal((await a.get('/settings')).body.rest_seconds, 60);
     await a.put('/settings', { rest_seconds: 120 });
-    assert.deepEqual((await a.get('/settings')).body, { unit: 'lb', rest_seconds: 120 }); // unit kept
+    assert.deepEqual((await a.get('/settings')).body, { unit: 'lb', rest_seconds: 120, technique_links: {} }); // unit kept
     assert.equal((await a.put('/settings', { rest_seconds: 9999 })).status, 400);
+
+    // General technique videos: one type at a time, others kept; only YouTube links.
+    assert.equal((await a.put('/settings', { technique_links: { drop: 'https://youtu.be/drop1' } })).status, 204);
+    assert.equal((await a.put('/settings', { technique_links: { warmup: 'youtube.com/watch?v=w' } })).status, 204);
+    assert.equal((await a.put('/settings', { technique_links: { drop: 'https://vimeo.com/1' } })).status, 400);
+    assert.deepEqual((await a.get('/settings')).body.technique_links, {
+      drop: 'https://youtu.be/drop1',
+      warmup: 'youtube.com/watch?v=w',
+    });
+    await a.put('/settings', { technique_links: { warmup: '' } });
+    assert.equal((await a.get('/settings')).body.technique_links.warmup, '');
+    assert.equal((await a.get('/settings')).body.unit, 'lb');
 
     const v = await a.post(`/exercises/${ex.id}/videos`, { source: 'youtube', url: 'https://youtu.be/x', title: 'Form' });
     assert.equal(v.status, 201);
